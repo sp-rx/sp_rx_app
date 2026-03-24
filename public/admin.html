@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Admin Panel</title>
+<style>
+body { font-family: Arial; padding:10px; font-size:11px }
+input, select, button { font-size:10px; border-radius:7px; padding:5px; margin:5px 0; }
+table { border-collapse: collapse; width:100%; margin-top:20px; }
+th, td { border:1px solid #ccc; padding:5px; text-align:left; }
+#transactionsTable { margin-top:20px; display:none; }
+.active-row { background-color: #DBEDCE; }
+.past-row { background-color: #919191; }
+.future-row { background-color: #CEE7ED; }
+h2,h3 { margin-bottom:5px; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="adminLogin">
+  <h2>Admin Login</h2>
+  <input id="adminUser" placeholder="ID">
+  <input id="adminPass" type="password" placeholder="Password">
+  <button id="adminLoginBtn">Login</button>
+  <p id="adminMsg"></p>
+</div>
+
+<!-- PANEL -->
+<div id="adminPanel" style="display:none;">
+  <h2>Admin Dashboard</h2>
+  <div style="height:20px">- - - -</div>
+
+  <!-- CREATE / DELETE USER -->
+<h3>Create User / Delete User</h3>
+<input id="newUser" placeholder="Username">
+<input id="newPass" placeholder="Password">
+<input id="newEmail" placeholder="Email"> <!-- NEW -->
+<select id="planType">
+  <option value="3d">3 Days</option>
+  <option value="8d">8 Days</option>
+</select>
+<button id="createUserBtn">Create</button>
+<br>
+<input id="delUserInput" placeholder="Username to delete">
+<button id="deleteUserBtn">Delete User</button>
+  <div style="height:20px">- - - -</div>
+
+  <!-- SEARCH -->
+  <h3>Search User</h3>
+  <input id="searchBar" placeholder="Search users...">
+  <div style="height:20px">- - - -</div>
+
+  <!-- USERS TABLE -->
+  <h3>Users     &nbsp;&nbsp;&nbsp;&nbsp;Time now is <span id="currentDateTime" style="margin-bottom:15px; font-weight:bold;"></span>&nbsp;&nbsp;&nbsp;&nbsp;<button id="toggleActiveBtn">Show All</button>
+  </h3>
+  <table id="usersTable">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>User</th>
+	<th>P/w</th>
+	<th>Email</th>
+        <th>Active</th>
+        <th>Plan</th>
+        <th>Start</th>
+        <th>End</th>
+        <th>Request</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- TRANSACTIONS TABLE -->
+  <h3>Transaction History: <span id="transUser">...</span>
+    <button id="sortEarliestBtn">Earliest First</button>
+    <button id="sortLatestBtn">Latest First</button>
+  </h3>
+  <table id="transactionsTable">
+    <thead>
+      <tr>
+        <th>Plan Type</th>
+        <th>Start Date</th>
+        <th>End Date</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+let adminToken = "";
+let showActiveOnly = false;
+let transData = [];
+let transUserName = "";
+
+// ===== DATE FORMAT =====
+function formatDate(iso){
+  if(!iso) return "-";
+  const d = new Date(iso);
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+}
+
+// ===== ADMIN LOGIN =====
+document.getElementById("adminLoginBtn").onclick = async () => {
+  const username = document.getElementById("adminUser").value;
+  const password = document.getElementById("adminPass").value;
+  const res = await fetch("/admin/login", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username,password})
+  });
+  const data = await res.json();
+  if(data.success){
+    adminToken = data.token;
+    document.getElementById("adminLogin").style.display="none";
+    document.getElementById("adminPanel").style.display="block";
+    loadUsers();
+  } else {
+    document.getElementById("adminMsg").textContent = data.error;
+  }
+};
+
+// ===== LOAD USERS =====
+async function loadUsers(){
+  let resUsers = await fetch("/admin/users",{headers:{"x-session-token":adminToken}});
+  let users = await resUsers.json();
+  let resReq = await fetch("/admin/requests",{headers:{"x-session-token":adminToken}});
+  let requests = await resReq.json();
+
+  const searchTerm = document.getElementById("searchBar").value.toLowerCase();
+if(searchTerm) users = users.filter(u =>
+  u.username.toLowerCase().includes(searchTerm) || (u.email || "").toLowerCase().includes(searchTerm)
+);
+
+  const tbody = document.querySelector("#usersTable tbody");
+  tbody.innerHTML = "";
+  const today = new Date();
+
+  users.forEach(u=>{
+    if(!u.subscriptionId) return;
+    const pending = requests.find(r=>r.userId===u.userId && r.status==="pending" && r.planType===u.planType)?.planType || "";
+    const start = new Date(u.startDate);
+    const end = new Date(u.endDate);
+
+    let rowClass = end<today?"past-row":start>today?"future-row":"active-row";
+    if(showActiveOnly && rowClass!=="active-row") return;
+
+    const tr = document.createElement("tr");
+    tr.className = rowClass;
+    tr.innerHTML = `
+  <td>${u.userId}</td>
+  <td>${u.username}</td>
+  <td>${u.password}</td>
+  <td>${u.email || "-"}</td>
+  <td>${u.activeSession}</td>
+  <td>${u.planType||"-"}</td>
+  <td>${formatDate(u.startDate)}</td>
+  <td>${formatDate(u.endDate)}</td>
+  <td>${pending}</td>
+  <td>
+    <button onclick="renewUser(${u.userId}, '3d')">+ 3 D</button>
+    <button onclick="renewUser(${u.userId}, '8d')">+ 8 D</button>
+    <button onclick="deleteSubscription(${u.subscriptionId})">-</button>
+    <button onclick="showTransactions(${u.userId}, '${u.username}')">Hx</button>
+    <button onclick="editUser(${u.userId}, '${u.username}', '${u.password}', '${u.email || ""}')">Edit</button>
+  </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ===== CREATE USER =====
+document.getElementById("createUserBtn").onclick = async ()=>{
+  const username = document.getElementById("newUser").value.trim();
+  const password = document.getElementById("newPass").value.trim();
+  const email = document.getElementById("newEmail").value.trim(); // NEW
+  const plan = document.getElementById("planType").value;
+  if(!username || !password || !email) return alert("Enter username, password, and email");
+
+  const res = await fetch("/admin/add-user", {
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-session-token":adminToken},
+    body: JSON.stringify({username,password,email,planType:plan,planDays:plan==="3d"?3:8})
+  });
+  const data = await res.json();
+  if(data.success) {
+    loadUsers();
+    newUser.value=""; newPass.value=""; newEmail.value=""; // clear inputs
+  } else alert(data.error);
+};
+
+// ===== DELETE USER =====
+document.getElementById("deleteUserBtn").onclick = async ()=>{
+  const username = document.getElementById("delUserInput").value.trim();
+  if(!username) return alert("Enter username to delete");
+  if(!confirm(`Delete "${username}" and all subscriptions?`)) return;
+
+  const resUsers = await fetch("/admin/users",{headers:{"x-session-token":adminToken}});
+  const users = await resUsers.json();
+  const user = users.find(u=>u.username===username);
+  if(!user) return alert("User not found");
+
+  await fetch("/admin/delete-user",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-session-token":adminToken},
+    body: JSON.stringify({userId:user.userId})
+  });
+  delUserInput.value="";
+  loadUsers();
+};
+
+// ===== DELETE SUBSCRIPTION =====
+async function deleteSubscription(subId){
+  if(!confirm("Delete this subscription row?")) return;
+  await fetch("/admin/delete-subscription",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-session-token":adminToken},
+    body: JSON.stringify({subscriptionId:subId})
+  });
+  loadUsers();
+}
+
+// ===== RENEW USER =====
+async function renewUser(userId, planType){
+  await fetch("/admin/manual-renew",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-session-token":adminToken},
+    body: JSON.stringify({userId, planType})
+  });
+  loadUsers();
+}
+
+// ===== TRANSACTIONS =====
+async function showTransactions(userId, username){
+  const res = await fetch(`/admin/transactions/${userId}`,{headers:{"x-session-token":adminToken}});
+  transData = await res.json();
+  transUserName = username;
+  document.getElementById("transUser").textContent = username;
+  renderTransactions();
+  document.getElementById("transactionsTable").style.display="table";
+}
+
+function editUser(userId, username, password, email){
+  const newUsername = prompt("Enter new username:", username);
+  if(newUsername === null) return;
+  const newPassword = prompt("Enter new password:", password);
+  if(newPassword === null) return;
+  const newEmail = prompt("Enter new email:", email);
+  if(newEmail === null) return;
+
+  fetch("/admin/edit-user", {
+    method: "POST",
+    headers: { "Content-Type":"application/json", "x-session-token": adminToken },
+    body: JSON.stringify({ userId, username: newUsername, password: newPassword, email: newEmail })
+  }).then(res=>res.json()).then(data=>{
+    if(data.success) loadUsers();
+    else alert(data.error);
+  });
+}
+
+function renderTransactions(sort="latest"){
+  const tbody = document.querySelector("#transactionsTable tbody");
+  tbody.innerHTML="";
+  let sorted = [...transData];
+  sorted.sort((a,b)=> sort==="earliest"?new Date(a.startDate)-new Date(b.startDate):new Date(b.startDate)-new Date(a.startDate));
+  const today = new Date();
+  sorted.forEach(t=>{
+    const tr = document.createElement("tr");
+    const start = new Date(t.startDate);
+    const end = new Date(t.endDate);
+    tr.className = end<today?"past-row":start>today?"future-row":"active-row";
+    tr.innerHTML = `<td>${t.planType}</td><td>${formatDate(t.startDate)}</td><td>${formatDate(t.endDate)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ===== SORT BUTTONS =====
+document.getElementById("sortEarliestBtn").onclick = ()=>renderTransactions("earliest");
+document.getElementById("sortLatestBtn").onclick = ()=>renderTransactions("latest");
+
+// ===== SEARCH & TOGGLE =====
+document.getElementById("searchBar").oninput = ()=>loadUsers();
+document.getElementById("toggleActiveBtn").onclick = ()=>{
+  showActiveOnly = !showActiveOnly;
+  document.getElementById("toggleActiveBtn").textContent = showActiveOnly?"Show Active Only":"Show All";
+  loadUsers();
+};
+
+// ===== DATE/TIME =====
+function updateDateTime(){
+  const now = new Date();
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  document.getElementById("currentDateTime").textContent =
+    `${days[now.getDay()]}, ${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+}
+setInterval(updateDateTime,1000);
+updateDateTime();
+</script>
+
+</body>
+</html>
